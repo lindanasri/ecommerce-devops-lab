@@ -1,0 +1,126 @@
+---
+- name: Deploy E-Commerce App
+  hosts: web
+  become: yes
+
+  tasks:
+    - name: Install Docker
+      yum:
+        name: docker
+        state: present
+
+    - name: Start Docker
+      service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Install Docker Compose
+      get_url:
+        url: https://github.com/docker/compose/releases/download/v2.20.0/docker-compose-linux-x86_64
+        dest: /usr/local/bin/docker-compose
+        mode: '0755'
+
+    - name: Add ec2-user to docker group
+      user:
+        name: ec2-user
+        groups: docker
+        append: yes
+
+    - name: Create app directory
+      file:
+        path: /opt/ecommerce
+        state: directory
+        mode: '0755'
+
+    - name: Create docker-compose.yml
+      copy:
+        dest: /opt/ecommerce/docker-compose.yml
+        content: |
+          version: '3'
+          services:
+            mongodb:
+              image: mongo:6
+              restart: always
+              ports:
+                - "27017:27017"
+            app:
+              image: node:18-alpine
+              working_dir: /app
+              volumes:
+                - ./app:/app
+              ports:
+                - "3000:3000"
+              depends_on:
+                - mongodb
+              command: sh -c "npm install && node server.js"
+              environment:
+                - MONGO_URL=mongodb://mongodb:27017/ecommerce
+            nginx:
+              image: nginx:alpine
+              ports:
+                - "80:80"
+              volumes:
+                - ./nginx.conf:/etc/nginx/conf.d/default.conf
+              depends_on:
+                - app
+
+    - name: Create app source directory
+      file:
+        path: /opt/ecommerce/app
+        state: directory
+
+    - name: Create Node.js server
+      copy:
+        dest: /opt/ecommerce/app/server.js
+        content: |
+          const express = require('express');
+          const app = express();
+          app.get('/', (req, res) => {
+            res.send('<h1>E-Commerce Store</h1><p>- Laptop $1200</p><p>- Phone $800</p>');
+          });
+          app.listen(3000, () => console.log('Running on port 3000'));
+
+    - name: Create package.json
+      copy:
+        dest: /opt/ecommerce/app/package.json
+        content: |
+          {
+            "name": "ecommerce",
+            "version": "1.0.0",
+            "dependencies": {
+              "express": "^4.18.0"
+            }
+          }
+
+    - name: Create Nginx config
+      copy:
+        dest: /opt/ecommerce/nginx.conf
+        content: |
+          server {
+            listen 80;
+            location / {
+              proxy_pass http://app:3000;
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+            }
+          }
+
+    - name: Start containers
+      shell: /usr/local/bin/docker-compose up -d
+      args:
+        chdir: /opt/ecommerce
+
+- name: Update App Design
+  hosts: web
+  become: yes
+  tasks:
+    - name: Copy new server.js
+      copy:
+        src: /tmp/server.js
+        dest: /opt/ecommerce/app/server.js
+
+    - name: Restart containers
+      shell: /usr/local/bin/docker-compose restart
+      args:
+        chdir: /opt/ecommerce

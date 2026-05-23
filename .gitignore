@@ -1,0 +1,13 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+tfplan
+
+# Clés SSH
+*.pem
+key.pem
+
+# OS
+.DS_Store
