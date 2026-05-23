@@ -22,52 +22,34 @@ data "aws_ami" "amazon_linux" {
   }
 }
 
-resource "aws_vpc" "main" {
-  cidr_block           = var.vpc_cidr
-  enable_dns_hostnames = true
-  tags = { Name = "ecommerce-vpc" }
-}
-
-resource "aws_internet_gateway" "igw" {
-  vpc_id = aws_vpc.main.id
-  tags   = { Name = "ecommerce-igw" }
-}
-
-resource "aws_subnet" "public" {
-  count                   = 2
-  vpc_id                  = aws_vpc.main.id
-  cidr_block              = var.public_subnet_cidrs[count.index]
-  availability_zone       = data.aws_availability_zones.available.names[count.index]
-  map_public_ip_on_launch = true
-  tags = { Name = "public-subnet-${count.index + 1}" }
-}
-
-resource "aws_subnet" "private" {
-  count             = 2
-  vpc_id            = aws_vpc.main.id
-  cidr_block        = var.private_subnet_cidrs[count.index]
-  availability_zone = data.aws_availability_zones.available.names[count.index]
-  tags = { Name = "private-subnet-${count.index + 1}" }
-}
-
-resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.main.id
-  route {
-    cidr_block = "0.0.0.0/0"
-    gateway_id = aws_internet_gateway.igw.id
+# ── Utilise le VPC existant ─────────────────────────────
+data "aws_vpc" "main" {
+  filter {
+    name   = "tag:Name"
+    values = ["ecommerce-vpc"]
   }
-  tags = { Name = "public-rt" }
+  filter {
+    name   = "state"
+    values = ["available"]
+  }
 }
 
-resource "aws_route_table_association" "public" {
-  count          = 2
-  subnet_id      = aws_subnet.public[count.index].id
-  route_table_id = aws_route_table.public.id
+# ── Utilise les subnets existants ───────────────────────
+data "aws_subnets" "public" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.main.id]
+  }
+  filter {
+    name   = "map-public-ip-on-launch"
+    values = ["true"]
+  }
 }
 
+# ── Security Group ALB ─────────────────────────────────
 resource "aws_security_group" "alb_sg" {
-  name   = "alb-sg"
-  vpc_id = aws_vpc.main.id
+  name   = "alb-sg-pipeline"
+  vpc_id = data.aws_vpc.main.id
   ingress {
     from_port   = 80
     to_port     = 80
@@ -86,12 +68,13 @@ resource "aws_security_group" "alb_sg" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-  tags = { Name = "alb-sg" }
+  tags = { Name = "alb-sg-pipeline" }
 }
 
+# ── Security Group EC2 ─────────────────────────────────
 resource "aws_security_group" "ec2_sg" {
-  name   = "ec2-sg"
-  vpc_id = aws_vpc.main.id
+  name   = "ec2-sg-pipeline"
+  vpc_id = data.aws_vpc.main.id
   ingress {
     from_port       = 80
     to_port         = 80
@@ -110,33 +93,35 @@ resource "aws_security_group" "ec2_sg" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-  tags = { Name = "ec2-sg" }
+  tags = { Name = "ec2-sg-pipeline" }
 }
 
+# ── EC2 Instances ──────────────────────────────────────
 resource "aws_instance" "web" {
   count                  = var.instance_count
   ami                    = data.aws_ami.amazon_linux.id
   instance_type          = var.instance_type
   key_name               = var.key_name
-  subnet_id              = aws_subnet.public[count.index].id
+  subnet_id              = tolist(data.aws_subnets.public.ids)[count.index % length(data.aws_subnets.public.ids)]
   vpc_security_group_ids = [aws_security_group.ec2_sg.id]
-  tags = { Name = "web-${count.index + 1}" }
+  tags = { Name = "web-pipeline-${count.index + 1}" }
 }
 
+# ── ALB ────────────────────────────────────────────────
 resource "aws_lb" "alb" {
-  name               = "ecommerce-alb"
+  name               = "ecommerce-alb-pipeline"
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb_sg.id]
-  subnets            = aws_subnet.public[*].id
-  tags = { Name = "ecommerce-alb" }
+  subnets            = tolist(data.aws_subnets.public.ids)
+  tags = { Name = "ecommerce-alb-pipeline" }
 }
 
 resource "aws_lb_target_group" "tg" {
-  name     = "ecommerce-tg"
+  name     = "ecommerce-tg-pipeline"
   port     = 80
   protocol = "HTTP"
-  vpc_id   = aws_vpc.main.id
+  vpc_id   = data.aws_vpc.main.id
   health_check {
     path                = "/"
     healthy_threshold   = 2
